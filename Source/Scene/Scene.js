@@ -3500,28 +3500,15 @@ define([
         return result;
     };
 
-    function isExcluded(object, objectsToExclude) {
-        if (!defined(objectsToExclude) || objectsToExclude.length === 0) {
-            return false;
-        }
-        return (objectsToExclude.indexOf(object) > -1) ||
-               (objectsToExclude.indexOf(object.primitive) > -1) ||
-               (objectsToExclude.indexOf(object.id) > -1);
-    }
-
-    function drillPick(limit, pickCallback, objectsToExclude) {
+    function drillPick(limit, pickCallback) {
         // PERFORMANCE_IDEA: This function calls each primitive's update for each pass. Instead
         // we could update the primitive once, and then just execute their commands for each pass,
         // and cull commands for picked primitives.  e.g., base on the command's owner.
-        var i;
-        var attributes;
         var result = [];
-        var pickedPrimitives = [];
-        var pickedAttributes = [];
-        var pickedFeatures = [];
         if (!defined(limit)) {
             limit = Number.MAX_VALUE;
         }
+        var objectHider = new ObjectHider();
 
         var pickedResult = pickCallback();
         while (defined(pickedResult)) {
@@ -3537,57 +3524,16 @@ define([
                 break;
             }
 
-            if (!isExcluded(object, objectsToExclude)) {
-                result.push(pickedResult);
-                if (0 >= --limit) {
-                    break;
-                }
+            result.push(pickedResult);
+            if (0 >= --limit) {
+                break;
             }
 
-            var primitive = object.primitive;
-            var hasShowAttribute = false;
-
-            // If the picked object has a show attribute, use it.
-            if (typeof primitive.getGeometryInstanceAttributes === 'function') {
-                if (defined(object.id)) {
-                    attributes = primitive.getGeometryInstanceAttributes(object.id);
-                    if (defined(attributes) && defined(attributes.show)) {
-                        hasShowAttribute = true;
-                        attributes.show = ShowGeometryInstanceAttribute.toValue(false, attributes.show);
-                        pickedAttributes.push(attributes);
-                    }
-                }
-            }
-
-            if (object instanceof Cesium3DTileFeature) {
-                hasShowAttribute = true;
-                object.show = false;
-                pickedFeatures.push(object);
-            }
-
-            // Otherwise, hide the entire primitive
-            if (!hasShowAttribute) {
-                primitive.show = false;
-                pickedPrimitives.push(primitive);
-            }
-
+            objectHider.hidePickedObject(object);
             pickedResult = pickCallback();
         }
 
-        // Unhide everything we hid while drill picking
-        for (i = 0; i < pickedPrimitives.length; ++i) {
-            pickedPrimitives[i].show = true;
-        }
-
-        for (i = 0; i < pickedAttributes.length; ++i) {
-            attributes = pickedAttributes[i];
-            attributes.show = ShowGeometryInstanceAttribute.toValue(true, attributes.show);
-        }
-
-        for (i = 0; i < pickedFeatures.length; ++i) {
-            pickedFeatures[i].show = true;
-        }
-
+        objectHider.showAll();
         return result;
     }
 
@@ -3699,6 +3645,105 @@ define([
         }
     }
 
+    function ObjectHider(scene) {
+        this.scene = scene;
+        this.primitives = [];
+        this.attributes = [];
+        this.features = [];
+    }
+
+    ObjectHider.prototype.showAll = function() {
+        var i;
+        for (i = 0; i < this.primitives.length; ++i) {
+            this.primitives[i].show = true;
+        }
+        for (i = 0; i < this.features.length; ++i) {
+            this.features[i].show = true;
+        }
+        for (i = 0; i < this.attributes.length; ++i) {
+            var attributes = this.attributes[i];
+            attributes.show = ShowGeometryInstanceAttribute.toValue(true, attributes.show);
+        }
+        this.primitives.length = 0;
+        this.attributes.length = 0;
+        this.features.length = 0;
+    };
+
+    ObjectHider.prototype.hideObjects = function(objects) {
+        if (!defined(objects) || objects.length === 0) {
+            return;
+        }
+
+        var length = objects.length;
+        for (var i = 0; i < length; ++i) {
+            this.hideObject(objects[i]);
+        }
+    };
+
+    ObjectHider.prototype.hidePickedObject = function(object) {
+        if (object instanceof Cesium3DTileFeature) {
+            object.show = false;
+            this.features.push(object);
+            return;
+        }
+
+        var primitive = object.primitive;
+
+        // If the picked object has a show attribute, use it.
+        if (typeof primitive.getGeometryInstanceAttributes === 'function') {
+            if (defined(object.id)) {
+                var attributes = primitive.getGeometryInstanceAttributes(object.id);
+                if (defined(attributes) && defined(attributes.show)) {
+                    attributes.show = ShowGeometryInstanceAttribute.toValue(false, attributes.show);
+                    this.attributes.push(attributes);
+                    return;
+                }
+            }
+        }
+
+        primitive.show = false;
+        this.primitives.push(primitive);
+    };
+
+    function hidePrimitive(objectHider, object, primitives) {
+        var length = primitives.length;
+        for (var i = 0; i < length; ++i) {
+            var primitive = primitives.get(i);
+            if (primitive.show) {
+                if (primitive instanceof PrimitiveCollection) {
+                    hidePrimitive(objectHider, object, primitive);
+                } else if (primitive === object || primitive.id === object) {
+                    primitive.show = false;
+                    objectHider.primitives.push(primitive);
+                } else if (typeof primitive.getGeometryInstanceAttributes === 'function') {
+                    var geometryInstances = primitive.geometryInstances;
+                    if (defined(geometryInstances)) {
+                        var geometryInstancesLength = geometryInstances.length;
+                        for (var j = 0; j < geometryInstancesLength; ++j) {
+                            var id = geometryInstances[j].id;
+                            if (id === object) {
+                                var attributes = primitive.getGeometryInstanceAttributes(id);
+                                if (defined(attributes) && defined(attributes.show) && attributes.show.value[0] === 1) {
+                                    attributes.show = ShowGeometryInstanceAttribute.toValue(false, attributes.show);
+                                    objectHider.attributes.push(attributes);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ObjectHider.prototype.hideObject = function(object) {
+        if (object instanceof Cesium3DTileFeature && object.show) {
+            object.show = false;
+            this.features.push(object);
+            return;
+        }
+        hidePrimitive(this, object, this.scene.primitives);
+    };
+
     function getRayIntersections(scene, ray, limit, objectsToExclude) {
         //>>includeStart('debug', pragmas.debug);
         Check.defined('ray', ray);
@@ -3706,10 +3751,14 @@ define([
             throw new DeveloperError('Ray intersections are only supported in 3D mode.');
         }
         //>>includeEnd('debug');
+        var objectHider = new ObjectHider(scene);
+        objectHider.hideObjects(objectsToExclude);
         var pickCallback = function() {
             return getRayIntersection(scene, ray);
         };
-        return drillPick(limit, pickCallback, objectsToExclude);
+        var result = drillPick(limit, pickCallback);
+        objectHider.showAll();
+        return result;
     }
 
     /**
