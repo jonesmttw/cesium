@@ -155,7 +155,7 @@ defineSuite([
         globe.depthTestAgainstTerrain = true;
         return pollToPromise(function() {
             scene.render();
-            return globe.tilesLoaded;
+            return globe._surface.tileProvider.ready && globe._surface._tileLoadQueueHigh.length === 0 && globe._surface._tileLoadQueueMedium.length === 0 && globe._surface._tileLoadQueueLow.length === 0 && globe._surface._debug.tilesWaitingForChildren === 0;
         });
     }
 
